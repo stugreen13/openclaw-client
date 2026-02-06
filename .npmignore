@@ -1,32 +1,9 @@
-# Source files (we ship dist instead)
-src/
+src/generate-openclaw-types.ts
 tsconfig.json
-
-# Development files
-.github/
-scripts/
-examples/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Git
-.git/
+.git
 .gitignore
-
-# Test and CI
-coverage/
-*.test.ts
-*.spec.ts
-
-# Misc
 *.log
-.env*
+.DS_Store
+.env
+.env.local
+examples/

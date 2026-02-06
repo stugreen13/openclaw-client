@@ -3,8 +3,8 @@ import { compile } from 'json-schema-to-typescript';
 import path from 'path';
 
 async function generate() {
-  const schemaPath = path.join(process.cwd(), 'protocol.schema.json');
-  const outputPath = path.join(process.cwd(), 'src/types.ts');
+  const schemaPath = path.join(__dirname, 'protocol.schema.json');
+  const outputPath = path.join(__dirname, 'types.ts');
 
   console.log('📖 Reading OpenClaw protocol schema...');
   const schemaData = JSON.parse(await fs.readFile(schemaPath, 'utf-8'));
