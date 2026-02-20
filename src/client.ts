@@ -110,6 +110,14 @@ export interface OpenClawClientConfig {
   clientVersion?: string;
   platform?: string;
   mode?: ConnectParams['client']['mode'];
+  /** Timeout in ms for the connect handshake (default: 120000).
+   *  Set this higher if device approval may take a while. */
+  connectTimeoutMs?: number;
+  /** Timeout in ms for regular RPC requests (default: 30000). */
+  requestTimeoutMs?: number;
+  /** Additional ConnectParams fields to merge into the handshake request
+   *  (e.g. `device` for device identity, `caps`, `commands`). */
+  connectParams?: Partial<ConnectParams>;
 }
 
 export type EventListener = (event: EventFrame) => void;
@@ -253,7 +261,8 @@ export class OpenClawClient {
   }
 
   /**
-   * Perform the connection handshake after receiving the challenge
+   * Perform the connection handshake after receiving the challenge.
+   * Uses connectTimeoutMs (default 120s) since device approval may take a while.
    */
   private async handshake(_challenge: { nonce: string; ts: number }): Promise<HelloOk> {
     const params: ConnectParams = {
@@ -270,15 +279,17 @@ export class OpenClawClient {
       auth: {
         token: this.config.token,
       },
+      ...this.config.connectParams,
     };
 
-    return this.request<HelloOk>('connect', params);
+    const connectTimeout = this.config.connectTimeoutMs ?? 120000;
+    return this.request<HelloOk>('connect', params, connectTimeout);
   }
 
   /**
    * Send a request and wait for response
    */
-  private async request<T = any>(method: string, params?: any): Promise<T> {
+  private async request<T = any>(method: string, params?: any, timeoutMs?: number): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('Not connected');
     }
@@ -294,11 +305,11 @@ export class OpenClawClient {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
 
-      // Set timeout for request (30 seconds)
+      const effectiveTimeout = timeoutMs ?? this.config.requestTimeoutMs ?? 30000;
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Request timeout: ${method}`));
-      }, 30000);
+      }, effectiveTimeout);
 
       // Clear timeout when promise settles
       const originalResolve = resolve;
