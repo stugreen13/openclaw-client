@@ -51,6 +51,9 @@ interface OpenClawClientConfig {
   clientVersion?: string;    // Client version (default: '1.0.0')
   platform?: string;         // Platform name (default: 'web')
   mode?: string;             // Client mode (default: 'ui')
+  connectTimeoutMs?: number; // Timeout for connect handshake (default: 120000)
+  requestTimeoutMs?: number; // Timeout for RPC requests (default: 30000)
+  connectParams?: Partial<ConnectParams>; // Extra fields merged into handshake
 }
 ```
 
@@ -268,6 +271,33 @@ npm run build
 # Publish to npm
 npm publish
 ```
+
+## Changelog
+
+### 2.0.0
+
+**Breaking Changes**
+
+- **Connect handshake protocol** - The client now implements a challenge-response handshake. On connect, the gateway sends a `connect.challenge` event with a nonce before the client sends its `connect` request. This requires a compatible gateway version.
+
+**New Features**
+
+- **Configurable timeouts** - New `connectTimeoutMs` (default 120s) and `requestTimeoutMs` (default 30s) config options.
+- **Connect params override** - New `connectParams` config option to merge additional fields into the handshake request (e.g. `device`, `caps`, `commands`).
+- **New API methods:**
+  - `createAgent` / `updateAgent` / `deleteAgent` - Full agent CRUD
+  - `getSessionsUsage` - Session usage stats
+  - `getTalkConfig` - Talk configuration
+  - `removeDevicePairing` - Remove a paired device
+  - `testPush` - Test push notifications to a node
+
+### 1.1.1
+
+- Documentation updates.
+
+### 1.1.0
+
+- Initial public release with full Gateway RPC coverage.
 
 ## License
 
