@@ -1,7 +1,7 @@
-import { DeviceIdentityManager } from './device-identity';
 import type { DeviceIdentityStore, DeviceTokenStore } from './device-identity';
-import { ReconnectController } from './reconnect';
+import { DeviceIdentityManager } from './device-identity';
 import type { ReconnectConfig } from './reconnect';
+import { ReconnectController } from './reconnect';
 import type {
   AgentIdentityParams,
   AgentIdentityResult,
@@ -124,8 +124,8 @@ export interface OpenClawClientConfig {
    *  Can be a static object or a function that receives the challenge
    *  (useful for signing the nonce into `device.nonce`). */
   connectParams?:
-    | Partial<ConnectParams>
-    | ((challenge: { nonce: string; ts: number }) => Partial<ConnectParams> | Promise<Partial<ConnectParams>>);
+  | Partial<ConnectParams>
+  | ((challenge: { nonce: string; ts: number }) => Partial<ConnectParams> | Promise<Partial<ConnectParams>>);
   /** Provide a DeviceIdentityStore to enable built-in Ed25519 device signing.
    *  When set, the library generates/loads a keypair and signs the connect
    *  request automatically (takes precedence over connectParams function). */
@@ -637,7 +637,7 @@ export class OpenClawClient {
    * Get agent identity
    */
   async getAgentIdentity(params: AgentIdentityParams = {}): Promise<AgentIdentityResult> {
-    return this.request<AgentIdentityResult>('agent.identity', params);
+    return this.request<AgentIdentityResult>('agent.identity.get', params);
   }
 
   /**
