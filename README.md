@@ -53,7 +53,9 @@ interface OpenClawClientConfig {
   mode?: string;             // Client mode (default: 'ui')
   connectTimeoutMs?: number; // Timeout for connect handshake (default: 120000)
   requestTimeoutMs?: number; // Timeout for RPC requests (default: 30000)
-  connectParams?: Partial<ConnectParams>; // Extra fields merged into handshake
+  connectParams?: Partial<ConnectParams>  // Static object, or...
+    | ((challenge: { nonce: string; ts: number }) =>  // ...function receiving challenge
+        Partial<ConnectParams> | Promise<Partial<ConnectParams>>);
 }
 ```
 
@@ -273,6 +275,12 @@ npm publish
 ```
 
 ## Changelog
+
+### 2.0.1
+
+**Bug Fixes**
+
+- **Challenge nonce now passed to `connectParams`** - The challenge received during the connect handshake was being ignored (`_challenge`). `connectParams` can now be a function that receives the challenge `{ nonce, ts }`, allowing callers to sign the nonce into `device.nonce`. Static objects still work as before (backwards compatible).
 
 ### 2.0.0
 

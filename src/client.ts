@@ -116,8 +116,12 @@ export interface OpenClawClientConfig {
   /** Timeout in ms for regular RPC requests (default: 30000). */
   requestTimeoutMs?: number;
   /** Additional ConnectParams fields to merge into the handshake request
-   *  (e.g. `device` for device identity, `caps`, `commands`). */
-  connectParams?: Partial<ConnectParams>;
+   *  (e.g. `device` for device identity, `caps`, `commands`).
+   *  Can be a static object or a function that receives the challenge
+   *  (useful for signing the nonce into `device.nonce`). */
+  connectParams?:
+    | Partial<ConnectParams>
+    | ((challenge: { nonce: string; ts: number }) => Partial<ConnectParams> | Promise<Partial<ConnectParams>>);
 }
 
 export type EventListener = (event: EventFrame) => void;
@@ -264,7 +268,11 @@ export class OpenClawClient {
    * Perform the connection handshake after receiving the challenge.
    * Uses connectTimeoutMs (default 120s) since device approval may take a while.
    */
-  private async handshake(_challenge: { nonce: string; ts: number }): Promise<HelloOk> {
+  private async handshake(challenge: { nonce: string; ts: number }): Promise<HelloOk> {
+    const connectParams = typeof this.config.connectParams === 'function'
+      ? await this.config.connectParams(challenge)
+      : (this.config.connectParams ?? {});
+
     const params: ConnectParams = {
       minProtocol: 3,
       maxProtocol: 3,
@@ -279,7 +287,7 @@ export class OpenClawClient {
       auth: {
         token: this.config.token,
       },
-      ...this.config.connectParams,
+      ...connectParams,
     };
 
     const connectTimeout = this.config.connectTimeoutMs ?? 120000;
