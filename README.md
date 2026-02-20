@@ -14,34 +14,139 @@ yarn add openclaw-client
 
 ## Quick Start
 
+Connect to a local OpenClaw instance:
+
 ```typescript
 import { OpenClawClient } from 'openclaw-client';
 
 const client = new OpenClawClient({
   gatewayUrl: 'ws://localhost:18789',
   token: 'your-token',
-  clientId: 'gateway-client',
-  mode: 'ui',
+});
+
+const result = await client.connect();
+console.log('Connected:', result.server.connId);
+
+const sessions = await client.listSessions();
+client.disconnect();
+```
+
+## Device Identity
+
+Built-in Ed25519 device signing — no manual crypto required. Provide a `DeviceIdentityStore` (and optionally a `DeviceTokenStore`) and the library handles keypair generation, persistence, v2 payload signing, and device token management.
+
+> **Requires Node.js 20+** or Chrome 113+ / Safari 17+ / Firefox 130+ (Ed25519 via Web Crypto API). The library itself still works on Node 18+ when device identity is not used.
+
+### Browser Example
+
+```typescript
+import { OpenClawClient } from 'openclaw-client';
+import type { DeviceIdentityRecord, DeviceIdentityStore, DeviceTokenStore } from 'openclaw-client';
+
+const identityStore: DeviceIdentityStore = {
+  async load() {
+    const raw = localStorage.getItem('oc-device-identity');
+    return raw ? JSON.parse(raw) : null;
+  },
+  async save(record: DeviceIdentityRecord) {
+    localStorage.setItem('oc-device-identity', JSON.stringify(record));
+  },
+};
+
+const tokenStore: DeviceTokenStore = {
+  async load() {
+    return localStorage.getItem('oc-device-token');
+  },
+  async save(token: string) {
+    localStorage.setItem('oc-device-token', token);
+  },
+};
+
+const client = new OpenClawClient({
+  gatewayUrl: 'wss://gateway.example.com',
+  token: 'initial-pairing-token',
+  deviceIdentity: identityStore,
+  deviceToken: tokenStore,
+  onPairingRequired: (required) => {
+    if (required) console.log('Approve this device on the gateway...');
+    else console.log('Device paired!');
+  },
 });
 
 await client.connect();
-const sessions = await client.listSessions();
 ```
 
-## Features
+### Node.js Example
 
-- ✅ **Type-safe** - Auto-generated TypeScript types from OpenClaw protocol schema
-- ✅ **Lightweight** - Minimal dependencies, works in Node.js 18+ and browsers
-- ✅ **Event handling** - Listen to real-time events from the Gateway
-- ✅ **Server-friendly** - Includes utilities for server-side usage (Next.js, etc.)
+```typescript
+import { readFile, writeFile } from 'fs/promises';
+import { OpenClawClient } from 'openclaw-client';
+import type { DeviceIdentityStore, DeviceTokenStore } from 'openclaw-client';
 
-## API
+const identityStore: DeviceIdentityStore = {
+  async load() {
+    try { return JSON.parse(await readFile('.oc-identity.json', 'utf8')); }
+    catch { return null; }
+  },
+  async save(record) {
+    await writeFile('.oc-identity.json', JSON.stringify(record));
+  },
+};
 
-### `OpenClawClient`
+const tokenStore: DeviceTokenStore = {
+  async load() {
+    try { return await readFile('.oc-token', 'utf8'); }
+    catch { return null; }
+  },
+  async save(token) {
+    await writeFile('.oc-token', token);
+  },
+};
 
-Main WebSocket client for OpenClaw Gateway.
+const client = new OpenClawClient({
+  gatewayUrl: 'ws://localhost:18789',
+  token: 'your-token',
+  deviceIdentity: identityStore,
+  deviceToken: tokenStore,
+});
 
-#### Configuration
+await client.connect();
+```
+
+### Interaction with `connectParams`
+
+| `deviceIdentity` | `connectParams` | Behavior |
+|---|---|---|
+| set | static object | Both work — device from manager, other fields (e.g. `caps`) merged from static object |
+| set | function | `deviceIdentity` takes precedence — function is **not** called |
+| not set | function | Existing behavior — function receives challenge, returns params |
+| not set | static/absent | Simple merge, no device logic |
+
+## Auto-Reconnection
+
+Opt-in exponential backoff reconnection:
+
+```typescript
+const client = new OpenClawClient({
+  gatewayUrl: 'wss://gateway.example.com',
+  token: 'your-token',
+  reconnect: {
+    enabled: true,
+    baseDelay: 1000,    // default 1s
+    maxDelay: 30000,    // default 30s
+    maxAttempts: 20,    // default Infinity
+  },
+  onConnection: (connected) => {
+    console.log(connected ? 'Connected' : 'Disconnected');
+  },
+});
+
+await client.connect();
+// If connection drops, client will automatically reconnect
+// Calling client.disconnect() stops reconnection
+```
+
+## Configuration Reference
 
 ```typescript
 interface OpenClawClientConfig {
@@ -51,139 +156,171 @@ interface OpenClawClientConfig {
   clientVersion?: string;    // Client version (default: '1.0.0')
   platform?: string;         // Platform name (default: 'web')
   mode?: string;             // Client mode (default: 'ui')
-  connectTimeoutMs?: number; // Timeout for connect handshake (default: 120000)
-  requestTimeoutMs?: number; // Timeout for RPC requests (default: 30000)
-  connectParams?: Partial<ConnectParams>  // Static object, or...
+  connectTimeoutMs?: number; // Handshake timeout in ms (default: 120000)
+  requestTimeoutMs?: number; // RPC request timeout in ms (default: 30000)
+  connectParams?: Partial<ConnectParams>  // Static connect params, or...
     | ((challenge: { nonce: string; ts: number }) =>  // ...function receiving challenge
         Partial<ConnectParams> | Promise<Partial<ConnectParams>>);
+  deviceIdentity?: DeviceIdentityStore;   // Enable built-in device signing
+  deviceToken?: DeviceTokenStore;         // Persist device tokens
+  reconnect?: ReconnectConfig;            // Auto-reconnection settings
+  onConnection?: (connected: boolean) => void;        // Connection state callback
+  onPairingRequired?: (required: boolean) => void;    // Device pairing callback
 }
 ```
 
-#### Methods
+## API Methods
 
-**Connection Management**
-- `connect(): Promise<HelloOk>` - Connect and authenticate
-- `disconnect(): void` - Disconnect from Gateway
-- `isConnected(): boolean` - Check connection status
-- `getConnectionId(): string | null` - Get the current connection ID
-- `addEventListener(listener): () => void` - Add event listener
+### Connection
 
-**Configuration**
-- `getConfig(params?): Promise<any>` - Get configuration
-- `setConfig(params): Promise<any>` - Update configuration
-- `getConfigSchema(params?): Promise<ConfigSchemaResponse>` - Get configuration schema
-- `applyConfig(params): Promise<any>` - Apply configuration changes
-- `patchConfig(params): Promise<any>` - Patch configuration
+| Method | Returns | Description |
+|---|---|---|
+| `connect()` | `Promise<HelloOk>` | Connect and authenticate |
+| `disconnect()` | `void` | Disconnect (stops auto-reconnect) |
+| `isConnected()` | `boolean` | Check connection status |
+| `getConnectionId()` | `string \| null` | Current connection ID |
+| `addEventListener(listener)` | `() => void` | Add event listener (returns unsubscribe fn) |
 
-**Sessions**
-- `listSessions(params?): Promise<any>` - List sessions
-- `deleteSession(params): Promise<any>` - Delete a session
-- `previewSessions(params): Promise<any>` - Preview sessions
-- `resolveSession(params): Promise<any>` - Resolve session
-- `patchSession(params): Promise<any>` - Patch session
-- `resetSession(params): Promise<any>` - Reset session
-- `compactSession(params): Promise<any>` - Compact session
-- `getSessionsUsage(params?): Promise<any>` - Get session usage
+### Configuration
 
-**Agents**
-- `listAgents(params?): Promise<AgentsListResult>` - List available agents
-- `createAgent(params): Promise<AgentsCreateResult>` - Create agent
-- `updateAgent(params): Promise<AgentsUpdateResult>` - Update agent
-- `deleteAgent(params): Promise<AgentsDeleteResult>` - Delete agent
-- `getAgentIdentity(params?): Promise<AgentIdentityResult>` - Get agent identity
-- `sendToAgent(params): Promise<any>` - Send a message to agent
-- `waitForAgent(params): Promise<any>` - Wait for agent run to complete
+| Method | Description |
+|---|---|
+| `getConfig(params?)` | Get configuration |
+| `setConfig(params)` | Set configuration |
+| `getConfigSchema(params?)` | Get configuration schema |
+| `applyConfig(params)` | Apply configuration changes |
+| `patchConfig(params)` | Patch configuration |
 
-**Agent Files**
-- `getAgentFile(params): Promise<AgentsFilesGetResult>` - Get agent file
-- `listAgentFiles(params): Promise<AgentsFilesListResult>` - List agent files
-- `setAgentFile(params): Promise<AgentsFilesSetResult>` - Update agent file
+### Sessions
 
-**Models**
-- `listModels(params?): Promise<ModelsListResult>` - List available models
+| Method | Description |
+|---|---|
+| `listSessions(params?)` | List sessions |
+| `deleteSession(params)` | Delete a session |
+| `previewSessions(params)` | Preview sessions |
+| `resolveSession(params)` | Resolve session |
+| `patchSession(params)` | Patch session |
+| `resetSession(params)` | Reset session |
+| `compactSession(params)` | Compact session |
+| `getSessionsUsage(params?)` | Get session usage |
 
-**Messaging**
-- `send(params): Promise<any>` - Send a message
-- `poll(params): Promise<any>` - Send a poll
-- `wake(params): Promise<any>` - Wake the system
+### Agents
 
-**Chat**
-- `getChatHistory(params): Promise<any>` - Get chat history
-- `sendChat(params): Promise<any>` - Send chat message
-- `abortChat(params): Promise<any>` - Abort chat
-- `injectChat(params): Promise<any>` - Inject chat message
+| Method | Description |
+|---|---|
+| `listAgents(params?)` | List available agents |
+| `createAgent(params)` | Create agent |
+| `updateAgent(params)` | Update agent |
+| `deleteAgent(params)` | Delete agent |
+| `getAgentIdentity(params?)` | Get agent identity |
+| `sendToAgent(params)` | Send message to agent |
+| `waitForAgent(params)` | Wait for agent run |
+| `getAgentFile(params)` | Get agent file |
+| `listAgentFiles(params)` | List agent files |
+| `setAgentFile(params)` | Set agent file content |
 
-**Wizard**
-- `startWizard(params?): Promise<WizardStartResult>` - Start wizard
-- `wizardNext(params): Promise<WizardNextResult>` - Wizard next step
-- `cancelWizard(params): Promise<any>` - Cancel wizard
-- `getWizardStatus(params): Promise<WizardStatusResult>` - Get wizard status
+### Chat & Messaging
 
-**Channels & Talk**
-- `getChannelsStatus(params?): Promise<ChannelsStatusResult>` - Get channels status
-- `logoutChannel(params): Promise<any>` - Logout from channel
-- `setTalkMode(params): Promise<any>` - Set talk mode
-- `getTalkConfig(params?): Promise<TalkConfigResult>` - Get talk config
+| Method | Description |
+|---|---|
+| `sendChat(params)` | Send chat message |
+| `getChatHistory(params)` | Get chat history |
+| `abortChat(params)` | Abort chat |
+| `injectChat(params)` | Inject chat message |
+| `send(params)` | Send a message |
+| `poll(params)` | Send a poll |
+| `wake(params)` | Wake the system |
 
-**Authentication**
-- `startWebLogin(params?): Promise<any>` - Start web login
-- `waitForWebLogin(params?): Promise<any>` - Wait for web login
+### Models
 
-**Skills**
-- `getSkillsStatus(params?): Promise<any>` - Get skills status
-- `getSkillsBins(params?): Promise<SkillsBinsResult>` - Get skills bins
-- `installSkill(params): Promise<any>` - Install skill
-- `updateSkill(params): Promise<any>` - Update skill
+| Method | Description |
+|---|---|
+| `listModels(params?)` | List available models |
 
-**Cron Jobs**
-- `listCronJobs(params?): Promise<{ jobs: CronJob[] }>` - List cron jobs
-- `getCronStatus(params?): Promise<any>` - Get cron status
-- `addCronJob(params): Promise<{ job: CronJob }>` - Add cron job
-- `updateCronJob(params): Promise<{ job: CronJob }>` - Update cron job
-- `removeCronJob(params): Promise<any>` - Remove cron job
-- `runCronJob(params): Promise<any>` - Run cron job
-- `getCronRuns(params): Promise<{ runs: CronRunLogEntry[] }>` - Get cron job runs
+### Device Pairing
 
-**Execution Approvals**
-- `getExecApprovals(params?): Promise<ExecApprovalsSnapshot>` - Get exec approvals
-- `setExecApprovals(params): Promise<ExecApprovalsSnapshot>` - Set exec approvals
-- `getNodeExecApprovals(params): Promise<ExecApprovalsSnapshot>` - Get node exec approvals
-- `setNodeExecApprovals(params): Promise<ExecApprovalsSnapshot>` - Set node exec approvals
-- `requestExecApproval(params): Promise<any>` - Request exec approval
-- `resolveExecApproval(params): Promise<any>` - Resolve exec approval
+| Method | Description |
+|---|---|
+| `listDevicePairings(params?)` | List device pairing requests |
+| `approveDevicePairing(params)` | Approve device pairing |
+| `rejectDevicePairing(params)` | Reject device pairing |
+| `removeDevicePairing(params)` | Remove paired device |
+| `rotateDeviceToken(params)` | Rotate device token |
+| `revokeDeviceToken(params)` | Revoke device token |
 
-**Device Pairing**
-- `listDevicePairings(params?): Promise<any>` - List device pairing requests
-- `approveDevicePairing(params): Promise<any>` - Approve device pairing
-- `rejectDevicePairing(params): Promise<any>` - Reject device pairing
-- `removeDevicePairing(params): Promise<any>` - Remove paired device
-- `rotateDeviceToken(params): Promise<any>` - Rotate device token
-- `revokeDeviceToken(params): Promise<any>` - Revoke device token
+### Node Management
 
-**Node Management**
-- `requestNodePairing(params): Promise<any>` - Request node pairing
-- `listNodePairings(params?): Promise<any>` - List node pairing requests
-- `approveNodePairing(params): Promise<any>` - Approve node pairing
-- `rejectNodePairing(params): Promise<any>` - Reject node pairing
-- `verifyNodePairing(params): Promise<any>` - Verify node pairing
-- `renameNode(params): Promise<any>` - Rename node
-- `listNodes(params?): Promise<any>` - List nodes
-- `describeNode(params): Promise<any>` - Describe node
-- `invokeNode(params): Promise<any>` - Invoke node command
-- `testPush(params): Promise<PushTestResult>` - Test push notification to node
+| Method | Description |
+|---|---|
+| `listNodes(params?)` | List nodes |
+| `describeNode(params)` | Describe node |
+| `invokeNode(params)` | Invoke node command |
+| `renameNode(params)` | Rename node |
+| `requestNodePairing(params)` | Request node pairing |
+| `listNodePairings(params?)` | List node pairing requests |
+| `approveNodePairing(params)` | Approve node pairing |
+| `rejectNodePairing(params)` | Reject node pairing |
+| `verifyNodePairing(params)` | Verify node pairing |
+| `testPush(params)` | Test push notification |
 
-**Logs**
-- `getLogTail(params?): Promise<LogsTailResult>` - Get log tail
+### Wizard
 
-**Updates**
-- `updateRun(params): Promise<any>` - Update and run
+| Method | Description |
+|---|---|
+| `startWizard(params?)` | Start wizard |
+| `wizardNext(params)` | Wizard next step |
+| `cancelWizard(params)` | Cancel wizard |
+| `getWizardStatus(params)` | Get wizard status |
 
-**Generic**
-- `call<T>(method, params?): Promise<T>` - Generic RPC method call for any method
+### Skills
 
-### `ServerOpenClawClient`
+| Method | Description |
+|---|---|
+| `getSkillsStatus(params?)` | Get skills status |
+| `getSkillsBins(params?)` | Get skills bins |
+| `installSkill(params)` | Install skill |
+| `updateSkill(params)` | Update skill |
 
-Server-side client manager for connection lifecycle management.
+### Cron Jobs
+
+| Method | Description |
+|---|---|
+| `listCronJobs(params?)` | List cron jobs |
+| `getCronStatus(params?)` | Get cron status |
+| `addCronJob(params)` | Add cron job |
+| `updateCronJob(params)` | Update cron job |
+| `removeCronJob(params)` | Remove cron job |
+| `runCronJob(params)` | Run cron job |
+| `getCronRuns(params)` | Get cron job runs |
+
+### Execution Approvals
+
+| Method | Description |
+|---|---|
+| `getExecApprovals(params?)` | Get exec approvals |
+| `setExecApprovals(params)` | Set exec approvals |
+| `getNodeExecApprovals(params)` | Get node exec approvals |
+| `setNodeExecApprovals(params)` | Set node exec approvals |
+| `requestExecApproval(params)` | Request exec approval |
+| `resolveExecApproval(params)` | Resolve exec approval |
+
+### Channels, Auth & Other
+
+| Method | Description |
+|---|---|
+| `getChannelsStatus(params?)` | Get channels status |
+| `logoutChannel(params)` | Logout from channel |
+| `setTalkMode(params)` | Set talk mode |
+| `getTalkConfig(params?)` | Get talk config |
+| `startWebLogin(params?)` | Start web login |
+| `waitForWebLogin(params?)` | Wait for web login |
+| `getLogTail(params?)` | Get log tail |
+| `updateRun(params)` | Update and run |
+| `call(method, params?)` | Generic RPC call |
+
+## Server-Side Usage
+
+`ServerOpenClawClient` manages connection lifecycle for server actions (Next.js, etc.):
 
 ```typescript
 import { ServerOpenClawClient, createServerClient } from 'openclaw-client';
@@ -191,7 +328,6 @@ import { ServerOpenClawClient, createServerClient } from 'openclaw-client';
 // Create from environment variables
 const serverClient = createServerClient();
 
-// Use with automatic connection management
 export async function myAction() {
   return serverClient.withClient(async (client) => {
     return await client.listSessions();
@@ -200,112 +336,45 @@ export async function myAction() {
 ```
 
 Environment variables:
-- `OPENCLAW_GATEWAY_URL` - Gateway URL (default: `http://localhost:18789`)
-- `OPENCLAW_TOKEN` - Authentication token
+- `OPENCLAW_GATEWAY_URL` — Gateway URL (default: `http://localhost:18789`)
+- `OPENCLAW_TOKEN` — Authentication token
 
-## Type Generation & Client Wrapper Maintenance
+## Advanced: Manual Device Signing
 
-This package uses a deterministic process to keep types and client method wrappers in sync with the OpenClaw protocol schema.
+If you need full control over the signing process, use `connectParams` as a function instead of `deviceIdentity`:
 
-### Step 1: Update the schema
-
-Place the latest `protocol.schema.json` from the OpenClaw Gateway into `src/protocol.schema.json`.
-
-### Step 2: Regenerate types
-
-```bash
-npm run generate:types
+```typescript
+const client = new OpenClawClient({
+  gatewayUrl: 'wss://gateway.example.com',
+  token: 'your-token',
+  connectParams: async (challenge) => ({
+    device: {
+      id: myDeviceId,
+      publicKey: myPublicKey,
+      signature: await sign(challenge.nonce),
+      signedAt: Date.now(),
+      nonce: challenge.nonce,
+    },
+  }),
+});
 ```
 
-This runs `src/generate-openclaw-types.ts` which uses `json-schema-to-typescript` to compile every definition in the schema into TypeScript interfaces. The output is written to `src/types.ts` (auto-generated, do not edit manually).
+## Type Generation
 
-### Step 3: Update client method wrappers
-
-The method wrappers in `src/client.ts` follow a deterministic pattern derived from the type names in `src/types.ts`:
-
-1. **Find all `*Params` types** - Each `*Params` interface represents an RPC method.
-2. **Derive the method name** - Convert the type name to a dot-separated RPC method name:
-   - `ConfigGetParams` → `config.get`
-   - `SessionsListParams` → `sessions.list`
-   - `AgentsFilesGetParams` → `agents.files.get`
-   - `ExecApprovalsNodeSetParams` → `exec.approvals.node.set`
-   - Top-level methods like `SendParams`, `PollParams`, `WakeParams` → `send`, `poll`, `wake`
-3. **Match result types** - If a corresponding `*Result` type exists (e.g. `AgentsListResult` for `AgentsListParams`), use it as the return type. Otherwise use `Promise<any>`.
-4. **Choose a wrapper method name** - Use a readable camelCase name (e.g. `listSessions`, `getConfig`, `deleteAgent`).
-5. **Default empty params** - If the `*Params` interface has no required fields (e.g. `interface ConfigGetParams {}`), default the parameter to `= {}`.
-6. **Import and add** - Import the new Params/Result types at the top of `client.ts` and add the wrapper method.
-
-**Skipped types:** Some `*Params` types are not RPC request methods but are used for node-side responses or event payloads (e.g. `NodeInvokeResultParams`, `NodeEventParams`). These are skipped.
-
-### Full update workflow
+Types are auto-generated from the OpenClaw protocol schema:
 
 ```bash
-# 1. Drop in updated schema
-cp /path/to/new/protocol.schema.json src/protocol.schema.json
+# 1. Place updated schema
+cp /path/to/protocol.schema.json src/protocol.schema.json
 
 # 2. Regenerate types
 npm run generate:types
 
-# 3. Update client wrappers (compare types.ts *Params exports against client.ts imports)
-#    - Add imports for any new *Params/*Result types
-#    - Add wrapper methods following the pattern above
-#    - Verify no existing types were removed/renamed
-
-# 4. Build and verify
+# 3. Build
 npm run build
-
-# 5. Publish
-npm publish
 ```
 
-## Development
-
-```bash
-# Install dependencies
-npm install
-
-# Generate types from schema
-npm run generate:types
-
-# Build the package
-npm run build
-
-# Publish to npm
-npm publish
-```
-
-## Changelog
-
-### 2.0.1
-
-**Bug Fixes**
-
-- **Challenge nonce now passed to `connectParams`** - The challenge received during the connect handshake was being ignored (`_challenge`). `connectParams` can now be a function that receives the challenge `{ nonce, ts }`, allowing callers to sign the nonce into `device.nonce`. Static objects still work as before (backwards compatible).
-
-### 2.0.0
-
-**Breaking Changes**
-
-- **Connect handshake protocol** - The client now implements a challenge-response handshake. On connect, the gateway sends a `connect.challenge` event with a nonce before the client sends its `connect` request. This requires a compatible gateway version.
-
-**New Features**
-
-- **Configurable timeouts** - New `connectTimeoutMs` (default 120s) and `requestTimeoutMs` (default 30s) config options.
-- **Connect params override** - New `connectParams` config option to merge additional fields into the handshake request (e.g. `device`, `caps`, `commands`).
-- **New API methods:**
-  - `createAgent` / `updateAgent` / `deleteAgent` - Full agent CRUD
-  - `getSessionsUsage` - Session usage stats
-  - `getTalkConfig` - Talk configuration
-  - `removeDevicePairing` - Remove a paired device
-  - `testPush` - Test push notifications to a node
-
-### 1.1.1
-
-- Documentation updates.
-
-### 1.1.0
-
-- Initial public release with full Gateway RPC coverage.
+See `src/generate-openclaw-types.ts` for the generation logic.
 
 ## License
 

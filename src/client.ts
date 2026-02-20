@@ -1,3 +1,7 @@
+import { DeviceIdentityManager } from './device-identity';
+import type { DeviceIdentityStore, DeviceTokenStore } from './device-identity';
+import { ReconnectController } from './reconnect';
+import type { ReconnectConfig } from './reconnect';
 import type {
   AgentIdentityParams,
   AgentIdentityResult,
@@ -122,6 +126,20 @@ export interface OpenClawClientConfig {
   connectParams?:
     | Partial<ConnectParams>
     | ((challenge: { nonce: string; ts: number }) => Partial<ConnectParams> | Promise<Partial<ConnectParams>>);
+  /** Provide a DeviceIdentityStore to enable built-in Ed25519 device signing.
+   *  When set, the library generates/loads a keypair and signs the connect
+   *  request automatically (takes precedence over connectParams function). */
+  deviceIdentity?: DeviceIdentityStore;
+  /** Optional store for persisting the device token returned by the gateway
+   *  after pairing approval. The stored token is preferred over config.token
+   *  for subsequent connections. */
+  deviceToken?: DeviceTokenStore;
+  /** Enable automatic reconnection with exponential backoff. */
+  reconnect?: ReconnectConfig;
+  /** Called when connection state changes. */
+  onConnection?: (connected: boolean) => void;
+  /** Called when the gateway indicates device pairing is required. */
+  onPairingRequired?: (required: boolean) => void;
 }
 
 export type EventListener = (event: EventFrame) => void;
@@ -148,9 +166,22 @@ export class OpenClawClient {
   private eventListeners: EventListener[] = [];
   private connected = false;
   private connectionId: string | null = null;
+  private deviceManager: DeviceIdentityManager | null = null;
+  private reconnectController: ReconnectController | null = null;
+  private reconnecting = false;
+  private intentionalDisconnect = false;
 
   constructor(config: OpenClawClientConfig) {
     this.config = config;
+    if (config.deviceIdentity) {
+      this.deviceManager = new DeviceIdentityManager(
+        config.deviceIdentity,
+        config.deviceToken,
+      );
+    }
+    if (config.reconnect?.enabled) {
+      this.reconnectController = new ReconnectController(config.reconnect);
+    }
   }
 
   /**
@@ -166,6 +197,8 @@ export class OpenClawClient {
     if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
       throw new Error('Already connected');
     }
+
+    this.intentionalDisconnect = false;
 
     // Create WebSocket connection
     const WS = getWebSocketConstructor();
@@ -216,6 +249,14 @@ export class OpenClawClient {
     const result = await this.handshake(challenge);
     this.connected = true;
     this.connectionId = result.server.connId;
+
+    // Save device token if returned and store is configured
+    if (result.auth?.deviceToken && this.deviceManager) {
+      await this.deviceManager.saveDeviceToken(result.auth.deviceToken);
+    }
+
+    this.reconnectController?.reset();
+    this.config.onConnection?.(true);
     return result;
   }
 
@@ -223,12 +264,16 @@ export class OpenClawClient {
    * Disconnect from the Gateway
    */
   disconnect(): void {
+    this.intentionalDisconnect = true;
+    this.reconnectController?.abort();
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
     this.connected = false;
     this.connectionId = null;
+    this.config.onConnection?.(false);
 
     // Reject all pending requests
     for (const [id, { reject }] of this.pending.entries()) {
@@ -269,21 +314,55 @@ export class OpenClawClient {
    * Uses connectTimeoutMs (default 120s) since device approval may take a while.
    */
   private async handshake(challenge: { nonce: string; ts: number }): Promise<HelloOk> {
-    const connectParams = typeof this.config.connectParams === 'function'
-      ? await this.config.connectParams(challenge)
-      : (this.config.connectParams ?? {});
+    const clientId = this.config.clientId || 'webchat-ui';
+    const clientMode = this.config.mode || 'ui';
+    const role = 'operator';
+    const scopes = ['operator.read', 'operator.write', 'operator.admin'];
+
+    let connectParams: Partial<ConnectParams> = {};
+
+    if (this.deviceManager) {
+      // Built-in device identity takes precedence over connectParams function
+      const storedToken = await this.deviceManager.getDeviceToken();
+      const token = storedToken || this.config.token;
+
+      const device = await this.deviceManager.buildConnectDevice({
+        clientId,
+        clientMode,
+        role,
+        scopes,
+        token,
+        nonce: challenge.nonce,
+      });
+
+      // Merge with static connectParams (for caps, etc.) but not function form
+      const staticParams =
+        typeof this.config.connectParams === 'function'
+          ? {}
+          : (this.config.connectParams ?? {});
+
+      connectParams = { ...staticParams, device };
+      // Override auth token if we have a stored device token
+      if (storedToken) {
+        connectParams.auth = { token: storedToken };
+      }
+    } else if (typeof this.config.connectParams === 'function') {
+      connectParams = await this.config.connectParams(challenge);
+    } else {
+      connectParams = this.config.connectParams ?? {};
+    }
 
     const params: ConnectParams = {
       minProtocol: 3,
       maxProtocol: 3,
       client: {
-        id: this.config.clientId || 'webchat-ui',
+        id: clientId,
         version: this.config.clientVersion || '1.0.0',
         platform: this.config.platform || 'web',
-        mode: this.config.mode || 'ui',
+        mode: clientMode,
       },
-      role: 'operator',
-      scopes: ['operator.read', 'operator.write', 'operator.admin'],
+      role,
+      scopes,
       auth: {
         token: this.config.token,
       },
@@ -382,6 +461,15 @@ export class OpenClawClient {
    * Handle event frame
    */
   private handleEvent(frame: EventFrame): void {
+    // Fire onPairingRequired for device pairing events
+    if (this.config.onPairingRequired) {
+      if (frame.event === 'device.pair.required') {
+        this.config.onPairingRequired(true);
+      } else if (frame.event === 'device.pair.approved') {
+        this.config.onPairingRequired(false);
+      }
+    }
+
     for (const listener of this.eventListeners) {
       try {
         listener(frame);
@@ -391,12 +479,63 @@ export class OpenClawClient {
     }
   }
 
+  private attemptReconnect(): void {
+    if (this.reconnecting) return;
+    this.reconnecting = true;
+
+    const loop = async () => {
+      while (
+        !this.intentionalDisconnect &&
+        this.reconnectController &&
+        this.reconnectController.canRetry()
+      ) {
+        try {
+          await this.reconnectController.schedule();
+        } catch {
+          // Aborted or max attempts exceeded
+          break;
+        }
+
+        if (this.intentionalDisconnect) break;
+
+        try {
+          await this.connect();
+          break; // Success
+        } catch {
+          // Will retry on next iteration
+        }
+      }
+      this.reconnecting = false;
+    };
+
+    loop();
+  }
+
   /**
    * Handle connection close
    */
   private handleClose(): void {
+    const wasConnected = this.connected;
     this.connected = false;
-    console.log('WebSocket connection closed');
+    this.connectionId = null;
+
+    if (wasConnected) {
+      this.config.onConnection?.(false);
+    }
+
+    // Reject all pending requests
+    for (const [id, { reject }] of this.pending.entries()) {
+      reject(new Error('Connection closed'));
+      this.pending.delete(id);
+    }
+
+    if (
+      !this.intentionalDisconnect &&
+      this.reconnectController &&
+      this.reconnectController.canRetry()
+    ) {
+      this.attemptReconnect();
+    }
   }
 
   /**
