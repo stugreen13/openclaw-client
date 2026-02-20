@@ -2,6 +2,10 @@ import type {
   AgentIdentityParams,
   AgentIdentityResult,
   AgentParams,
+  AgentsCreateParams,
+  AgentsCreateResult,
+  AgentsDeleteParams,
+  AgentsDeleteResult,
   AgentsFilesGetParams,
   AgentsFilesGetResult,
   AgentsFilesListParams,
@@ -10,6 +14,8 @@ import type {
   AgentsFilesSetResult,
   AgentsListParams,
   AgentsListResult,
+  AgentsUpdateParams,
+  AgentsUpdateResult,
   AgentWaitParams,
   ChannelsLogoutParams,
   ChannelsStatusParams,
@@ -37,6 +43,7 @@ import type {
   DevicePairApproveParams,
   DevicePairListParams,
   DevicePairRejectParams,
+  DevicePairRemoveParams,
   DeviceTokenRevokeParams,
   DeviceTokenRotateParams,
   EventFrame,
@@ -62,6 +69,8 @@ import type {
   NodePairVerifyParams,
   NodeRenameParams,
   PollParams,
+  PushTestParams,
+  PushTestResult,
   RequestFrame,
   ResponseFrame,
   SendParams,
@@ -72,11 +81,14 @@ import type {
   SessionsPreviewParams,
   SessionsResetParams,
   SessionsResolveParams,
+  SessionsUsageParams,
   SkillsBinsParams,
   SkillsBinsResult,
   SkillsInstallParams,
   SkillsStatusParams,
   SkillsUpdateParams,
+  TalkConfigParams,
+  TalkConfigResult,
   TalkModeParams,
   UpdateRunParams,
   WakeParams,
@@ -130,7 +142,13 @@ export class OpenClawClient {
   }
 
   /**
-   * Connect to the OpenClaw Gateway and perform handshake
+   * Connect to the OpenClaw Gateway and perform handshake.
+   *
+   * The protocol flow is:
+   * 1. Open WebSocket connection
+   * 2. Gateway sends a `connect.challenge` event with a nonce
+   * 3. Client responds with a `connect` request (including auth token)
+   * 4. Gateway replies with `hello-ok` containing server info and snapshot
    */
   async connect(): Promise<HelloOk> {
     if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
@@ -141,26 +159,49 @@ export class OpenClawClient {
     const WS = getWebSocketConstructor();
     this.ws = new WS(this.config.gatewayUrl);
 
-    // Wait for connection to open
-    await new Promise<void>((resolve, reject) => {
+    // Wait for connection to open and receive the challenge event
+    const challenge = await new Promise<{ nonce: string; ts: number }>((resolve, reject) => {
       if (!this.ws) {
         reject(new Error('WebSocket not initialized'));
         return;
       }
 
-      this.ws.onopen = () => resolve();
-      this.ws.onerror = (error) => reject(error);
+      const timeout = setTimeout(() => {
+        reject(new Error('Connection timeout: no challenge received'));
+      }, 15000);
+
+      this.ws.onerror = (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const frame = JSON.parse(event.data);
+          if (frame.type === 'event' && frame.event === 'connect.challenge') {
+            clearTimeout(timeout);
+            resolve(frame.payload);
+          }
+        } catch (error) {
+          clearTimeout(timeout);
+          reject(new Error('Failed to parse challenge frame'));
+        }
+      };
+
+      this.ws.onopen = () => {
+        // Wait for the challenge event after connection opens
+      };
     });
 
-    // Set up message handler
+    // Set up message handler for subsequent messages
     if (this.ws) {
       this.ws.onmessage = (event) => this.handleMessage(event);
       this.ws.onclose = () => this.handleClose();
       this.ws.onerror = (error) => this.handleError(error);
     }
 
-    // Perform handshake
-    const result = await this.handshake();
+    // Perform handshake (send connect request after receiving challenge)
+    const result = await this.handshake(challenge);
     this.connected = true;
     this.connectionId = result.server.connId;
     return result;
@@ -212,9 +253,9 @@ export class OpenClawClient {
   }
 
   /**
-   * Perform the connection handshake
+   * Perform the connection handshake after receiving the challenge
    */
-  private async handshake(): Promise<HelloOk> {
+  private async handshake(_challenge: { nonce: string; ts: number }): Promise<HelloOk> {
     const params: ConnectParams = {
       minProtocol: 3,
       maxProtocol: 3,
@@ -414,6 +455,27 @@ export class OpenClawClient {
   }
 
   /**
+   * Create agent
+   */
+  async createAgent(params: AgentsCreateParams): Promise<AgentsCreateResult> {
+    return this.request<AgentsCreateResult>('agents.create', params);
+  }
+
+  /**
+   * Update agent
+   */
+  async updateAgent(params: AgentsUpdateParams): Promise<AgentsUpdateResult> {
+    return this.request<AgentsUpdateResult>('agents.update', params);
+  }
+
+  /**
+   * Delete agent
+   */
+  async deleteAgent(params: AgentsDeleteParams): Promise<AgentsDeleteResult> {
+    return this.request<AgentsDeleteResult>('agents.delete', params);
+  }
+
+  /**
    * Get agent identity
    */
   async getAgentIdentity(params: AgentIdentityParams = {}): Promise<AgentIdentityResult> {
@@ -484,6 +546,13 @@ export class OpenClawClient {
   }
 
   /**
+   * Get session usage
+   */
+  async getSessionsUsage(params: SessionsUsageParams = {}): Promise<any> {
+    return this.request('sessions.usage', params);
+  }
+
+  /**
    * Send a message to agent
    */
   async sendToAgent(params: AgentParams): Promise<any> {
@@ -551,6 +620,13 @@ export class OpenClawClient {
    */
   async setTalkMode(params: TalkModeParams): Promise<any> {
     return this.request('talk.mode', params);
+  }
+
+  /**
+   * Get talk config
+   */
+  async getTalkConfig(params: TalkConfigParams = {}): Promise<TalkConfigResult> {
+    return this.request<TalkConfigResult>('talk.config', params);
   }
 
   /**
@@ -722,6 +798,13 @@ export class OpenClawClient {
   }
 
   /**
+   * Remove paired device
+   */
+  async removeDevicePairing(params: DevicePairRemoveParams): Promise<any> {
+    return this.request('device.pair.remove', params);
+  }
+
+  /**
    * Rotate device token
    */
   async rotateDeviceToken(params: DeviceTokenRotateParams): Promise<any> {
@@ -824,6 +907,13 @@ export class OpenClawClient {
    */
   async invokeNode(params: NodeInvokeParams): Promise<any> {
     return this.request('node.invoke', params);
+  }
+
+  /**
+   * Test push notification to node
+   */
+  async testPush(params: PushTestParams): Promise<PushTestResult> {
+    return this.request<PushTestResult>('push.test', params);
   }
 
   /**

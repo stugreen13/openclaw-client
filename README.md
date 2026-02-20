@@ -78,9 +78,13 @@ interface OpenClawClientConfig {
 - `patchSession(params): Promise<any>` - Patch session
 - `resetSession(params): Promise<any>` - Reset session
 - `compactSession(params): Promise<any>` - Compact session
+- `getSessionsUsage(params?): Promise<any>` - Get session usage
 
 **Agents**
 - `listAgents(params?): Promise<AgentsListResult>` - List available agents
+- `createAgent(params): Promise<AgentsCreateResult>` - Create agent
+- `updateAgent(params): Promise<AgentsUpdateResult>` - Update agent
+- `deleteAgent(params): Promise<AgentsDeleteResult>` - Delete agent
 - `getAgentIdentity(params?): Promise<AgentIdentityResult>` - Get agent identity
 - `sendToAgent(params): Promise<any>` - Send a message to agent
 - `waitForAgent(params): Promise<any>` - Wait for agent run to complete
@@ -110,10 +114,11 @@ interface OpenClawClientConfig {
 - `cancelWizard(params): Promise<any>` - Cancel wizard
 - `getWizardStatus(params): Promise<WizardStatusResult>` - Get wizard status
 
-**Channels**
+**Channels & Talk**
 - `getChannelsStatus(params?): Promise<ChannelsStatusResult>` - Get channels status
 - `logoutChannel(params): Promise<any>` - Logout from channel
 - `setTalkMode(params): Promise<any>` - Set talk mode
+- `getTalkConfig(params?): Promise<TalkConfigResult>` - Get talk config
 
 **Authentication**
 - `startWebLogin(params?): Promise<any>` - Start web login
@@ -146,6 +151,7 @@ interface OpenClawClientConfig {
 - `listDevicePairings(params?): Promise<any>` - List device pairing requests
 - `approveDevicePairing(params): Promise<any>` - Approve device pairing
 - `rejectDevicePairing(params): Promise<any>` - Reject device pairing
+- `removeDevicePairing(params): Promise<any>` - Remove paired device
 - `rotateDeviceToken(params): Promise<any>` - Rotate device token
 - `revokeDeviceToken(params): Promise<any>` - Revoke device token
 
@@ -159,6 +165,7 @@ interface OpenClawClientConfig {
 - `listNodes(params?): Promise<any>` - List nodes
 - `describeNode(params): Promise<any>` - Describe node
 - `invokeNode(params): Promise<any>` - Invoke node command
+- `testPush(params): Promise<PushTestResult>` - Test push notification to node
 
 **Logs**
 - `getLogTail(params?): Promise<LogsTailResult>` - Get log tail
@@ -191,17 +198,60 @@ Environment variables:
 - `OPENCLAW_GATEWAY_URL` - Gateway URL (default: `http://localhost:18789`)
 - `OPENCLAW_TOKEN` - Authentication token
 
-## Type Generation
+## Type Generation & Client Wrapper Maintenance
 
-This package includes auto-generated types from the OpenClaw protocol schema.
+This package uses a deterministic process to keep types and client method wrappers in sync with the OpenClaw protocol schema.
 
-To regenerate types (for development):
+### Step 1: Update the schema
+
+Place the latest `protocol.schema.json` from the OpenClaw Gateway into `src/protocol.schema.json`.
+
+### Step 2: Regenerate types
 
 ```bash
 npm run generate:types
 ```
 
-The schema file is located at `src/protocol.schema.json` and is manually updated when the OpenClaw protocol changes.
+This runs `src/generate-openclaw-types.ts` which uses `json-schema-to-typescript` to compile every definition in the schema into TypeScript interfaces. The output is written to `src/types.ts` (auto-generated, do not edit manually).
+
+### Step 3: Update client method wrappers
+
+The method wrappers in `src/client.ts` follow a deterministic pattern derived from the type names in `src/types.ts`:
+
+1. **Find all `*Params` types** - Each `*Params` interface represents an RPC method.
+2. **Derive the method name** - Convert the type name to a dot-separated RPC method name:
+   - `ConfigGetParams` → `config.get`
+   - `SessionsListParams` → `sessions.list`
+   - `AgentsFilesGetParams` → `agents.files.get`
+   - `ExecApprovalsNodeSetParams` → `exec.approvals.node.set`
+   - Top-level methods like `SendParams`, `PollParams`, `WakeParams` → `send`, `poll`, `wake`
+3. **Match result types** - If a corresponding `*Result` type exists (e.g. `AgentsListResult` for `AgentsListParams`), use it as the return type. Otherwise use `Promise<any>`.
+4. **Choose a wrapper method name** - Use a readable camelCase name (e.g. `listSessions`, `getConfig`, `deleteAgent`).
+5. **Default empty params** - If the `*Params` interface has no required fields (e.g. `interface ConfigGetParams {}`), default the parameter to `= {}`.
+6. **Import and add** - Import the new Params/Result types at the top of `client.ts` and add the wrapper method.
+
+**Skipped types:** Some `*Params` types are not RPC request methods but are used for node-side responses or event payloads (e.g. `NodeInvokeResultParams`, `NodeEventParams`). These are skipped.
+
+### Full update workflow
+
+```bash
+# 1. Drop in updated schema
+cp /path/to/new/protocol.schema.json src/protocol.schema.json
+
+# 2. Regenerate types
+npm run generate:types
+
+# 3. Update client wrappers (compare types.ts *Params exports against client.ts imports)
+#    - Add imports for any new *Params/*Result types
+#    - Add wrapper methods following the pattern above
+#    - Verify no existing types were removed/renamed
+
+# 4. Build and verify
+npm run build
+
+# 5. Publish
+npm publish
+```
 
 ## Development
 

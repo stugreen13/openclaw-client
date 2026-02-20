@@ -134,6 +134,12 @@ export interface HelloOk {
       mainSessionKey: string;
       scope?: string;
     };
+    authMode?: 'none' | 'token' | 'password' | 'trusted-proxy';
+    updateAvailable?: {
+      currentVersion: string;
+      latestVersion: string;
+      channel: string;
+    };
   };
   canvasHostUrl?: string;
   auth?: {
@@ -237,6 +243,12 @@ export interface Snapshot {
     mainSessionKey: string;
     scope?: string;
   };
+  authMode?: 'none' | 'token' | 'password' | 'trusted-proxy';
+  updateAvailable?: {
+    currentVersion: string;
+    latestVersion: string;
+    channel: string;
+  };
 }
 
 export interface ErrorShape {
@@ -263,12 +275,13 @@ export interface AgentEvent {
 
 export interface SendParams {
   to: string;
-  message: string;
+  message?: string;
   mediaUrl?: string;
   mediaUrls?: string[];
   gifPlayback?: boolean;
   channel?: string;
   accountId?: string;
+  threadId?: string;
   sessionKey?: string;
   idempotencyKey: string;
 }
@@ -293,7 +306,11 @@ export interface PollParams {
     | [string, string, string, string, string, string, string, string, string, string, string]
     | [string, string, string, string, string, string, string, string, string, string, string, string];
   maxSelections?: number;
+  durationSeconds?: number;
   durationHours?: number;
+  silent?: boolean;
+  isAnonymous?: boolean;
+  threadId?: string;
   channel?: string;
   accountId?: string;
   idempotencyKey: string;
@@ -320,6 +337,12 @@ export interface AgentParams {
   timeout?: number;
   lane?: string;
   extraSystemPrompt?: string;
+  inputProvenance?: {
+    kind: 'external_user' | 'inter_session' | 'internal_system';
+    sourceSessionKey?: string;
+    sourceChannel?: string;
+    sourceTool?: string;
+  };
   idempotencyKey: string;
   label?: string;
   spawnedBy?: string;
@@ -423,6 +446,23 @@ export interface NodeInvokeRequestEvent {
   idempotencyKey?: string;
 }
 
+export interface PushTestParams {
+  nodeId: string;
+  title?: string;
+  body?: string;
+  environment?: 'sandbox' | 'production';
+}
+
+export interface PushTestResult {
+  ok: boolean;
+  status: number;
+  apnsId?: string;
+  reason?: string;
+  tokenSuffix: string;
+  topic: string;
+  environment: 'sandbox' | 'production';
+}
+
 export interface SessionsListParams {
   limit?: number;
   activeMinutes?: number;
@@ -469,12 +509,14 @@ export interface SessionsPatchParams {
   execNode?: string | null;
   model?: string | null;
   spawnedBy?: string | null;
+  spawnDepth?: number | null;
   sendPolicy?: 'allow' | 'deny' | null;
   groupActivation?: 'mention' | 'always' | null;
 }
 
 export interface SessionsResetParams {
   key: string;
+  reason?: 'new' | 'reset';
 }
 
 export interface SessionsDeleteParams {
@@ -485,6 +527,14 @@ export interface SessionsDeleteParams {
 export interface SessionsCompactParams {
   key: string;
   maxLines?: number;
+}
+
+export interface SessionsUsageParams {
+  key?: string;
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+  includeContextWeight?: boolean;
 }
 
 export interface ConfigGetParams {}
@@ -624,6 +674,35 @@ export interface TalkModeParams {
   phase?: string;
 }
 
+export interface TalkConfigParams {
+  includeSecrets?: boolean;
+}
+
+export interface TalkConfigResult {
+  config: {
+    talk?: {
+      voiceId?: string;
+      voiceAliases?: {
+        /**
+         * This interface was referenced by `undefined`'s JSON-Schema definition
+         * via the `patternProperty` "^(.*)$".
+         */
+        [k: string]: string;
+      };
+      modelId?: string;
+      outputFormat?: string;
+      apiKey?: string;
+      interruptOnSpeech?: boolean;
+    };
+    session?: {
+      mainKey?: string;
+    };
+    ui?: {
+      seamColor?: string;
+    };
+  };
+}
+
 export interface ChannelsStatusParams {
   probe?: boolean;
   timeoutMs?: number;
@@ -740,6 +819,44 @@ export interface AgentSummary {
     avatar?: string;
     avatarUrl?: string;
   };
+}
+
+export interface AgentsCreateParams {
+  name: string;
+  workspace: string;
+  emoji?: string;
+  avatar?: string;
+}
+
+export interface AgentsCreateResult {
+  ok: true;
+  agentId: string;
+  name: string;
+  workspace: string;
+}
+
+export interface AgentsUpdateParams {
+  agentId: string;
+  name?: string;
+  workspace?: string;
+  model?: string;
+  avatar?: string;
+}
+
+export interface AgentsUpdateResult {
+  ok: true;
+  agentId: string;
+}
+
+export interface AgentsDeleteParams {
+  agentId: string;
+  deleteFiles?: boolean;
+}
+
+export interface AgentsDeleteResult {
+  ok: true;
+  agentId: string;
+  removedBindings: number;
 }
 
 export interface AgentsFileEntry {
@@ -877,6 +994,7 @@ export interface SkillsUpdateParams {
 export interface CronJob {
   id: string;
   agentId?: string;
+  sessionKey?: string;
   name: string;
   description?: string;
   enabled: boolean;
@@ -897,6 +1015,7 @@ export interface CronJob {
         kind: 'cron';
         expr: string;
         tz?: string;
+        staggerMs?: number;
       };
   sessionTarget: 'main' | 'isolated';
   wakeMode: 'next-heartbeat' | 'now';
@@ -911,13 +1030,31 @@ export interface CronJob {
         model?: string;
         thinking?: string;
         timeoutSeconds?: number;
+        allowUnsafeExternalContent?: boolean;
+        deliver?: boolean;
+        channel?: string;
+        to?: string;
+        bestEffortDeliver?: boolean;
       };
-  delivery?: {
-    mode: 'none' | 'announce';
-    channel?: 'last' | string;
-    to?: string;
-    bestEffort?: boolean;
-  };
+  delivery?:
+    | {
+        mode: 'none';
+        channel?: 'last' | string;
+        bestEffort?: boolean;
+        to?: string;
+      }
+    | {
+        mode: 'announce';
+        channel?: 'last' | string;
+        bestEffort?: boolean;
+        to?: string;
+      }
+    | {
+        mode: 'webhook';
+        channel?: 'last' | string;
+        bestEffort?: boolean;
+        to: string;
+      };
   state: {
     nextRunAtMs?: number;
     runningAtMs?: number;
@@ -925,6 +1062,7 @@ export interface CronJob {
     lastStatus?: 'ok' | 'error' | 'skipped';
     lastError?: string;
     lastDurationMs?: number;
+    consecutiveErrors?: number;
   };
 }
 
@@ -937,6 +1075,7 @@ export interface CronStatusParams {}
 export interface CronAddParams {
   name: string;
   agentId?: string | null;
+  sessionKey?: string | null;
   description?: string;
   enabled?: boolean;
   deleteAfterRun?: boolean;
@@ -954,6 +1093,7 @@ export interface CronAddParams {
         kind: 'cron';
         expr: string;
         tz?: string;
+        staggerMs?: number;
       };
   sessionTarget: 'main' | 'isolated';
   wakeMode: 'next-heartbeat' | 'now';
@@ -968,13 +1108,31 @@ export interface CronAddParams {
         model?: string;
         thinking?: string;
         timeoutSeconds?: number;
+        allowUnsafeExternalContent?: boolean;
+        deliver?: boolean;
+        channel?: string;
+        to?: string;
+        bestEffortDeliver?: boolean;
       };
-  delivery?: {
-    mode: 'none' | 'announce';
-    channel?: 'last' | string;
-    to?: string;
-    bestEffort?: boolean;
-  };
+  delivery?:
+    | {
+        mode: 'none';
+        channel?: 'last' | string;
+        bestEffort?: boolean;
+        to?: string;
+      }
+    | {
+        mode: 'announce';
+        channel?: 'last' | string;
+        bestEffort?: boolean;
+        to?: string;
+      }
+    | {
+        mode: 'webhook';
+        channel?: 'last' | string;
+        bestEffort?: boolean;
+        to: string;
+      };
 }
 
 export type CronUpdateParams =
@@ -983,6 +1141,7 @@ export type CronUpdateParams =
       patch: {
         name?: string;
         agentId?: string | null;
+        sessionKey?: string | null;
         description?: string;
         enabled?: boolean;
         deleteAfterRun?: boolean;
@@ -1000,6 +1159,7 @@ export type CronUpdateParams =
               kind: 'cron';
               expr: string;
               tz?: string;
+              staggerMs?: number;
             };
         sessionTarget?: 'main' | 'isolated';
         wakeMode?: 'next-heartbeat' | 'now';
@@ -1014,12 +1174,17 @@ export type CronUpdateParams =
               model?: string;
               thinking?: string;
               timeoutSeconds?: number;
+              allowUnsafeExternalContent?: boolean;
+              deliver?: boolean;
+              channel?: string;
+              to?: string;
+              bestEffortDeliver?: boolean;
             };
         delivery?: {
-          mode?: 'none' | 'announce';
+          mode?: 'none' | 'announce' | 'webhook';
           channel?: 'last' | string;
-          to?: string;
           bestEffort?: boolean;
+          to?: string;
         };
         state?: {
           nextRunAtMs?: number;
@@ -1028,6 +1193,7 @@ export type CronUpdateParams =
           lastStatus?: 'ok' | 'error' | 'skipped';
           lastError?: string;
           lastDurationMs?: number;
+          consecutiveErrors?: number;
         };
       };
     }
@@ -1036,6 +1202,7 @@ export type CronUpdateParams =
       patch: {
         name?: string;
         agentId?: string | null;
+        sessionKey?: string | null;
         description?: string;
         enabled?: boolean;
         deleteAfterRun?: boolean;
@@ -1053,6 +1220,7 @@ export type CronUpdateParams =
               kind: 'cron';
               expr: string;
               tz?: string;
+              staggerMs?: number;
             };
         sessionTarget?: 'main' | 'isolated';
         wakeMode?: 'next-heartbeat' | 'now';
@@ -1067,12 +1235,17 @@ export type CronUpdateParams =
               model?: string;
               thinking?: string;
               timeoutSeconds?: number;
+              allowUnsafeExternalContent?: boolean;
+              deliver?: boolean;
+              channel?: string;
+              to?: string;
+              bestEffortDeliver?: boolean;
             };
         delivery?: {
-          mode?: 'none' | 'announce';
+          mode?: 'none' | 'announce' | 'webhook';
           channel?: 'last' | string;
-          to?: string;
           bestEffort?: boolean;
+          to?: string;
         };
         state?: {
           nextRunAtMs?: number;
@@ -1081,6 +1254,7 @@ export type CronUpdateParams =
           lastStatus?: 'ok' | 'error' | 'skipped';
           lastError?: string;
           lastDurationMs?: number;
+          consecutiveErrors?: number;
         };
       };
     };
@@ -1120,6 +1294,8 @@ export interface CronRunLogEntry {
   status?: 'ok' | 'error' | 'skipped';
   error?: string;
   summary?: string;
+  sessionId?: string;
+  sessionKey?: string;
   runAtMs?: number;
   durationMs?: number;
   nextRunAtMs?: number;
@@ -1268,6 +1444,7 @@ export interface ExecApprovalRequestParams {
   resolvedPath?: string | null;
   sessionKey?: string | null;
   timeoutMs?: number;
+  twoPhase?: boolean;
 }
 
 export interface ExecApprovalResolveParams {
@@ -1283,6 +1460,10 @@ export interface DevicePairApproveParams {
 
 export interface DevicePairRejectParams {
   requestId: string;
+}
+
+export interface DevicePairRemoveParams {
+  deviceId: string;
 }
 
 export interface DeviceTokenRotateParams {
